@@ -57,6 +57,9 @@ module Fluent::Plugin
     desc 'Type of data sending to Splunk, `event` or `metric`. `metric` type is supported since Splunk 7.0. To use `metric` type, make sure the index is a metric index.'
     config_param :data_type, :enum, list: %i[event metric], default: :event
 
+    desc 'The Splunk HEC endpoint to receive data, `event` or `raw`. The event endpoint expects JSON formatted data with Splunk-specific attributes. The raw endpoint can receive any structured or unstructured data.'
+    config_param :endpoint, :enum, list: %i[event raw], default: :event
+
     desc 'The Splunk index to index events. When not set, will be decided by HEC. This is exclusive with `index_key`'
     config_param :index, :string, default: nil
 
@@ -302,7 +305,10 @@ module Fluent::Plugin
     end
 
     def construct_api
-      @hec_api = URI("#{@protocol}://#{@hec_host}:#{@hec_port}/services/collector")
+      if @data_type == :event
+        @hec_api = URI("#{@protocol}://#{@hec_host}:#{@hec_port}/services/collector")
+      else
+        @hec_api = URI("#{@protocol}://#{@hec_host}:#{@hec_port}/services/collector/raw?channel=00000000-0000-0000-0000-000000000000")
     rescue
       raise Fluent::ConfigError, "hec_host (#{@hec_host}) and/or hec_port (#{@hec_port}) are invalid."
     end
