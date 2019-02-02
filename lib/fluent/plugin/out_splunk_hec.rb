@@ -4,6 +4,7 @@ require "fluent/plugin/output"
 require "fluent/plugin/formatter"
 
 require 'openssl'
+require 'securerandom'
 require 'multi_json'
 require 'net/http/persistent'
 
@@ -139,7 +140,7 @@ module Fluent::Plugin
 
       # @formatter_configs is from formatter helper
       @formatters = @formatter_configs.map { |section|
-	MatchFormatter.new section.usage, formatter_create(usage: section.usage)
+  MatchFormatter.new section.usage, formatter_create(usage: section.usage)
       }
     end
 
@@ -166,9 +167,9 @@ module Fluent::Plugin
 
     def check_conflict
       KEY_FIELDS.each { |f|
-	kf = "#{f}_key"
-	raise Fluent::ConfigError, "Can not set #{f} and #{kf} at the same time." \
-	  if %W[@#{f} @#{kf}].all? &method(:instance_variable_get)
+  kf = "#{f}_key"
+  raise Fluent::ConfigError, "Can not set #{f} and #{kf} at the same time." \
+    if %W[@#{f} @#{kf}].all? &method(:instance_variable_get)
       }
     end
 
@@ -186,26 +187,26 @@ module Fluent::Plugin
 
     def prepare_key_fields
       KEY_FIELDS.each { |f|
-	v = instance_variable_get "@#{f}_key"
-	if v
-	  attrs = v.split('.').freeze
-	  if @keep_keys
-	    instance_variable_set "@#{f}", ->(_, record) { attrs.inject(record) { |o, k| o[k] } }
-	  else
-	    instance_variable_set "@#{f}", ->(_, record) {
-	      attrs[0...-1].inject(record) { |o, k| o[k] }.delete(attrs[-1])
-	    }
-	  end
-	else
-	  v = instance_variable_get "@#{f}"
-	  next unless v
+  v = instance_variable_get "@#{f}_key"
+  if v
+    attrs = v.split('.').freeze
+    if @keep_keys
+      instance_variable_set "@#{f}", ->(_, record) { attrs.inject(record) { |o, k| o[k] } }
+    else
+      instance_variable_set "@#{f}", ->(_, record) {
+        attrs[0...-1].inject(record) { |o, k| o[k] }.delete(attrs[-1])
+      }
+    end
+  else
+    v = instance_variable_get "@#{f}"
+    next unless v
 
-	  if v == TAG_PLACEHOLDER
-	    instance_variable_set "@#{f}", ->(tag, _) { tag }
-	  else
-	    instance_variable_set "@#{f}", ->(_, _) { v }
-	  end
-	end
+    if v == TAG_PLACEHOLDER
+      instance_variable_set "@#{f}", ->(tag, _) { tag }
+    else
+      instance_variable_set "@#{f}", ->(_, _) { v }
+    end
+  end
       }
     end
 
@@ -222,96 +223,111 @@ module Fluent::Plugin
       return unless @fields
 
       @extra_fields = @fields.corresponding_config_element.map { |k, v|
-	[k, v.empty? ? k : v]
+  [k, v.empty? ? k : v]
       }.to_h
     end
 
     def pick_custom_format_method
       if @data_type == :event
-	define_singleton_method :format, method(:format_event)
+        if @endpoint == :event
+          define_singleton_method :format, method(:format_event)
+        else
+          define_singleton_method :format, method(:format_raw)
+        end
       else
-	define_singleton_method :format, method(:format_metric)
+        define_singleton_method :format, method(:format_metric)
       end
     end
 
     def format_event(tag, time, record)
       MultiJson.dump({
-	host: @host ? @host.(tag, record) : @default_host,
-	# From the API reference
-	# http://docs.splunk.com/Documentation/Splunk/latest/RESTREF/RESTinput#services.2Fcollector
-	# `time` should be a string or unsigned integer.
-	# That's why we use `to_s` here.
-	time: time.to_f.to_s
+  host: @host ? @host.(tag, record) : @default_host,
+  # From the API reference
+  # http://docs.splunk.com/Documentation/Splunk/latest/RESTREF/RESTinput#services.2Fcollector
+  # `time` should be a string or unsigned integer.
+  # That's why we use `to_s` here.
+  time: time.to_f.to_s
       }.tap { |payload|
-	payload[:index] = @index.(tag, record) if @index
-	payload[:source] = @source.(tag, record) if @source
-	payload[:sourcetype] = @sourcetype.(tag, record) if @sourcetype
+  payload[:index] = @index.(tag, record) if @index
+  payload[:source] = @source.(tag, record) if @source
+  payload[:sourcetype] = @sourcetype.(tag, record) if @sourcetype
 
-	# delete nil fields otherwise will get formet error from HEC
-	%i[host index source sourcetype].each { |f| payload.delete f if payload[f].nil? }
+  # delete nil fields otherwise will get formet error from HEC
+  %i[host index source sourcetype].each { |f| payload.delete f if payload[f].nil? }
 
-	if @extra_fields
-	  payload[:fields] = @extra_fields.map { |name, field| [name, record[field]] }.to_h
-	  payload[:fields].compact!
-	  # if a field is already in indexed fields, then remove it from the original event
-	  @extra_fields.values.each { |field| record.delete field }
-	end
-	if formatter = @formatters.find { |f| f.match? tag }
-	  record = formatter.format(tag, time, record)
-	end
-	payload[:event] = convert_to_utf8 record
+  if @extra_fields
+    payload[:fields] = @extra_fields.map { |name, field| [name, record[field]] }.to_h
+    payload[:fields].compact!
+    # if a field is already in indexed fields, then remove it from the original event
+    @extra_fields.values.each { |field| record.delete field }
+  end
+  if formatter = @formatters.find { |f| f.match? tag }
+    record = formatter.format(tag, time, record)
+  end
+  payload[:event] = convert_to_utf8 record
       })
+    end
+
+    def format_raw(tag, time, record)
+      return record.to_json
     end
 
     def format_metric(tag, time, record)
       payload = {
-	host: @host ? @host.(tag, record) : @default_host,
-	# From the API reference
-	# http://docs.splunk.com/Documentation/Splunk/latest/RESTREF/RESTinput#services.2Fcollector
-	# `time` should be a string or unsigned integer.
-	# That's why we use `to_s` here.
-	time: time.to_f.to_s,
-	event: 'metric'
+  host: @host ? @host.(tag, record) : @default_host,
+  # From the API reference
+  # http://docs.splunk.com/Documentation/Splunk/latest/RESTREF/RESTinput#services.2Fcollector
+  # `time` should be a string or unsigned integer.
+  # That's why we use `to_s` here.
+  time: time.to_f.to_s,
+  event: 'metric'
       }
       payload[:index] = @index.(tag, record) if @index
       payload[:source] = @source.(tag, record) if @source
       payload[:sourcetype] = @sourcetype.(tag, record) if @sourcetype
 
       if not @metrics_from_event
-	fields = {
-	  metric_name: @metric_name.(tag, record),
-	  _value: @metric_value.(tag, record)
-	}
+  fields = {
+    metric_name: @metric_name.(tag, record),
+    _value: @metric_value.(tag, record)
+  }
 
-	if @extra_fields
-	  fields.update @extra_fields.map { |name, field| [name, record[field]] }.to_h
-	else
-	  fields.update record
-	end
+  if @extra_fields
+    fields.update @extra_fields.map { |name, field| [name, record[field]] }.to_h
+  else
+    fields.update record
+  end
 
-	fields.compact!
+  fields.compact!
 
-	payload[:fields] = convert_to_utf8 fields
+  payload[:fields] = convert_to_utf8 fields
 
-	return MultiJson.dump(payload)
+  return MultiJson.dump(payload)
       end
 
       # when metrics_from_event is true, generate one metric event for each key-value in record
       payloads = record.map { |key, value|
-	{fields: {metric_name: key, _value: value}}.merge! payload
+  {fields: {metric_name: key, _value: value}}.merge! payload
       }
 
       payloads.map!(&MultiJson.method(:dump)).join
     end
 
     def construct_api
-      if @data_type == :event
+      if @endpoint == :event
         @hec_api = URI("#{@protocol}://#{@hec_host}:#{@hec_port}/services/collector")
       else
-        @hec_api = URI("#{@protocol}://#{@hec_host}:#{@hec_port}/services/collector/raw?channel=00000000-0000-0000-0000-000000000000")
+        hec_channel = SecureRandom.uuid
+        metadata = ""
+        metadata += "&index=#{@index}" if @index
+        metadata += "&source=#{@source}" if @source
+        metadata += "&sourcetype=#{@sourcetype}" if @sourcetype
+        @hec_api = URI("#{@protocol}://#{@hec_host}:#{@hec_port}/services/collector/raw?channel=#{hec_channel}#{metadata}")
+        log.debug {"#{@protocol}://#{@hec_host}:#{@hec_port}/services/collector/raw?channel=#{hec_channel}#{metadata}" }
+      end
     rescue
       raise Fluent::ConfigError, "hec_host (#{@hec_host}) and/or hec_port (#{@hec_port}) are invalid."
-    end
+    end 
 
     def new_connection
       Net::HTTP::Persistent.new.tap do |c|
@@ -343,8 +359,8 @@ module Fluent::Plugin
       # For both success response (2xx) and client errors (4xx), we will consume the chunk.
       # Because there probably a bug in the code if we get 4xx errors, retry won't do any good.
       if not response.code.start_with?('2')
-	log.error "Failed POST to #{@hec_api}, response: #{response.body}"
-	log.debug { "Failed request body: #{post.body}" }
+  log.error "Failed POST to #{@hec_api}, response: #{response.body}"
+  log.debug { "Failed request body: #{post.body}" }
       end
     end
 
@@ -356,32 +372,32 @@ module Fluent::Plugin
     # https://github.com/GoogleCloudPlatform/fluent-plugin-google-cloud/blob/dbc28575/lib/fluent/plugin/out_google_cloud.rb#L1284
     def convert_to_utf8(input)
       if input.is_a?(Hash)
-	record = {}
-	input.each do |key, value|
-	  record[convert_to_utf8(key)] = convert_to_utf8(value)
-	end
+  record = {}
+  input.each do |key, value|
+    record[convert_to_utf8(key)] = convert_to_utf8(value)
+  end
 
-	return record
+  return record
       end
       return input.map { |value| convert_to_utf8(value) } if input.is_a?(Array)
       return input unless input.respond_to?(:encode)
 
       if @coerce_to_utf8
-	input.encode(
-	  'utf-8',
-	  invalid: :replace,
-	  undef: :replace,
-	  replace: @non_utf8_replacement_string)
+  input.encode(
+    'utf-8',
+    invalid: :replace,
+    undef: :replace,
+    replace: @non_utf8_replacement_string)
       else
-	begin
-	  input.encode('utf-8')
-	rescue EncodingError
-	  log.error { 'Encountered encoding issues potentially due to non ' \
-		     'UTF-8 characters. To allow non-UTF-8 characters and ' \
-		     'replace them with spaces, please set "coerce_to_utf8" ' \
-		     'to true.' }
-	  raise
-	end
+  begin
+    input.encode('utf-8')
+  rescue EncodingError
+    log.error { 'Encountered encoding issues potentially due to non ' \
+         'UTF-8 characters. To allow non-UTF-8 characters and ' \
+         'replace them with spaces, please set "coerce_to_utf8" ' \
+         'to true.' }
+    raise
+  end
       end
     end
   end
