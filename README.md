@@ -159,6 +159,12 @@ Default value: `8088`.
 
 The HEC token.
 
+### endpoint (string) (optional)
+
+The HEC endpoint to which data will be sent. Default event endpoint expects Splunk Metadata in JSON payload. "raw" endpoint accepts any structured or unstructured data.
+
+Default value: `event`.
+
 ### index (string) (optional)
 
 The Splunk index to index events. When not set, will be decided by HEC. This is exclusive with `index_key`.
